@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Desk Booking</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Header -->
+  <header id="app-header">
+    <div class="header-left">
+      <div class="logo">
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+          <rect x="2" y="8" width="24" height="16" rx="3" fill="currentColor" opacity="0.15"/>
+          <rect x="2" y="8" width="24" height="16" rx="3" stroke="currentColor" stroke-width="1.5"/>
+          <rect x="8" y="14" width="12" height="1.5" rx="0.75" fill="currentColor"/>
+          <rect x="8" y="17" width="8" height="1.5" rx="0.75" fill="currentColor"/>
+          <rect x="10" y="4" width="8" height="5" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+        </svg>
+        <span class="logo-text">DeskBook</span>
+      </div>
+    </div>
+    <nav class="header-nav">
+      <button class="nav-btn active" data-view="floor">Floor Plan</button>
+      <button class="nav-btn" data-view="list">My Bookings</button>
+      <button class="nav-btn admin-only hidden" data-view="admin">Admin</button>
+    </nav>
+    <div class="header-right">
+      <div class="date-nav">
+        <button id="prev-day" class="icon-btn">&#8249;</button>
+        <span id="current-date-display"></span>
+        <button id="next-day" class="icon-btn">&#8250;</button>
+      </div>
+      <div id="user-area">
+        <button id="sign-in-btn" class="btn-primary">Sign in with Google</button>
+        <div id="user-info" class="hidden">
+          <img id="user-avatar" src="" alt="" class="avatar">
+          <span id="user-name"></span>
+          <button id="sign-out-btn" class="btn-ghost">Sign out</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main views -->
+  <main>
+    <!-- Floor Plan View -->
+    <div id="view-floor" class="view active">
+      <div class="floor-toolbar">
+        <div class="legend">
+          <span class="legend-item"><span class="dot available"></span>Available</span>
+          <span class="legend-item"><span class="dot booked"></span>Booked</span>
+          <span class="legend-item"><span class="dot mine"></span>My booking</span>
+          <span class="legend-item"><span class="dot standing"></span>Standing desk</span>
+        </div>
+        <div class="view-controls">
+          <button id="zoom-out" class="icon-btn">&#8722;</button>
+          <span id="zoom-level">100%</span>
+          <button id="zoom-in" class="icon-btn">&#43;</button>
+          <button id="zoom-fit" class="btn-ghost small">Fit</button>
+        </div>
+      </div>
+      <div id="floor-container">
+        <div id="floor-viewport">
+          <svg id="office-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+        </div>
+      </div>
+    </div>
+
+    <!-- My Bookings View -->
+    <div id="view-list" class="view">
+      <div class="view-header">
+        <h2>My Bookings</h2>
+      </div>
+      <div id="bookings-list" class="bookings-grid"></div>
+    </div>
+
+    <!-- Admin View -->
+    <div id="view-admin" class="view">
+      <div class="view-header">
+        <h2>Admin Panel</h2>
+        <div class="admin-tabs">
+          <button class="tab-btn active" data-tab="all-bookings">All Bookings</button>
+          <button class="tab-btn" data-tab="desks">Manage Desks</button>
+          <button class="tab-btn" data-tab="users">Users</button>
+        </div>
+      </div>
+      <div id="admin-content"></div>
+    </div>
+  </main>
+
+  <!-- Booking Modal -->
+  <div id="booking-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <button class="modal-close" id="modal-close">&times;</button>
+      <div id="modal-content"></div>
+    </div>
+  </div>
+
+  <!-- Toast notifications -->
+  <div id="toast-container"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
