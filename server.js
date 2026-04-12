@@ -1,3 +1,4 @@
+require('dotenv').config();
 /**
  * DeskBook Server
  * Node.js + Express backend
@@ -8,7 +9,7 @@
  *   cp .env.example .env   # fill in your Google OAuth credentials
  *   node server.js
  */
-require('dotenv').config();
+
 const express = require('express');
 const session = require('express-session');
 const path = require('path');

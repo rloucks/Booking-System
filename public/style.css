@@ -139,6 +139,8 @@ main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 .view { display: none; flex: 1; flex-direction: column; overflow: hidden; }
 .view.active { display: flex; }
 .hidden { display: none !important; }
+.admin-only { display: none; }
+#custom-time-row { display: flex; gap: 8px; }
 
 /* ===== FLOOR PLAN ===== */
 .floor-toolbar {
