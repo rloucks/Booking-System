@@ -1,3 +1,4 @@
+require('dotenv').config();
 /**
  * DeskBook Server
  * Node.js + Express backend
