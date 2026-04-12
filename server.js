@@ -1,4 +1,3 @@
-require('dotenv').config();
 /**
  * DeskBook Server
  * Node.js + Express backend
@@ -111,7 +110,7 @@ app.get('/api/me', (req, res) => {
 });
 
 // ── Bookings API ───────────────────────────────────────────────────────────
-app.get('/api/bookings', requireAuth, (req, res) => {
+app.get('/api/bookings', (req, res) => {
   const bookings = readJson(DATA_FILE, []);
   const { date, deskId } = req.query;
   let result = bookings.filter(b => b.status === 'active');

@@ -61,14 +61,18 @@ async function apiFetch(path, opts = {}) {
 
 async function loadData() {
   try {
-    const [me, bookings, config] = await Promise.all([
-      apiFetch('/api/me'),
-      apiFetch('/api/bookings'),
-      apiFetch('/api/desks/config'),
-    ]);
+    // Just check /api/me — doesn't require auth, always returns {user: null} or {user: {...}}
+    const me = await apiFetch('/api/me');
     state.apiAvailable = true;
-    state.bookings = bookings;
+
+    // Load config (public) and bookings (only if logged in)
+    const [config, bookings] = await Promise.all([
+      apiFetch('/api/desks/config'),
+      me.user ? apiFetch('/api/bookings') : Promise.resolve([]),
+    ]);
     state.deskConfig = config;
+    state.bookings = bookings;
+
     if (me.user) {
       state.currentUser = me.user;
       state.isAdmin = me.user.isAdmin;
