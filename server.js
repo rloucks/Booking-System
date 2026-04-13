@@ -54,8 +54,9 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: false,   // ← must be false until HTTPS is set up
+    secure: process.env.NODE_ENV === 'production',  // true when HTTPS
     httpOnly: true,
+    sameSite: 'lax',
     maxAge: 7 * 24 * 60 * 60 * 1000,
   },
 }));
@@ -411,12 +412,46 @@ async function triggerN8n(event, data) {
 }
 
 // ── Start ──────────────────────────────────────────────────────────────────
-app.listen(PORT, '0.0.0.0', () => {
+const https = require('https');
+const http  = require('http');
+
+const CERT_DOMAIN = process.env.CERT_DOMAIN || 'booking.anvil.ai';
+const CERT_PATH   = `/etc/letsencrypt/live/${CERT_DOMAIN}`;
+
+function printBanner(mode) {
   console.log(`\n┌─────────────────────────────────────────┐`);
-  console.log(`│  DeskBook running on port ${PORT}           │`);
+  console.log(`│  DeskBook — ${mode.padEnd(29)}│`);
   console.log(`│  Mode:    ${DEMO_MODE ? '⚠️  DEMO (no Google Auth)  ' : '✅ Production (Google OAuth)'}  │`);
   console.log(`│  OAuth:   ${process.env.GOOGLE_CLIENT_ID ? '✅ configured               ' : '❌ not configured           '}  │`);
   console.log(`│  n8n:     ${process.env.N8N_WEBHOOK_URL  ? '✅ configured               ' : '— not configured           '}  │`);
-  console.log(`│  Admins:  ${ADMIN_EMAILS.length ? ADMIN_EMAILS.join(', ').padEnd(28) : 'none set                    '} │`);
+  console.log(`│  Admins:  ${ADMIN_EMAILS.length ? ADMIN_EMAILS.join(', ').slice(0,28).padEnd(28) : 'none set                    '} │`);
   console.log(`└─────────────────────────────────────────┘\n`);
-});
+}
+
+if (fs.existsSync(`${CERT_PATH}/privkey.pem`)) {
+  // HTTPS mode — cert found
+  const sslOptions = {
+    key:  fs.readFileSync(`${CERT_PATH}/privkey.pem`),
+    cert: fs.readFileSync(`${CERT_PATH}/fullchain.pem`),
+  };
+
+  https.createServer(sslOptions, app).listen(443, '0.0.0.0', () => {
+    printBanner(`HTTPS on 443`);
+  });
+
+  // HTTP → HTTPS redirect
+  http.createServer((req, res) => {
+    res.writeHead(301, { Location: `https://${CERT_DOMAIN}${req.url}` });
+    res.end();
+  }).listen(80, '0.0.0.0', () => {
+    log('SRV', 'HTTP redirect listening on port 80');
+  });
+
+} else {
+  // Fallback — HTTP only (no cert found)
+  app.listen(PORT, '0.0.0.0', () => {
+    printBanner(`HTTP on ${PORT} (no cert)`);
+    console.log(`  ⚠️  No SSL cert found at ${CERT_PATH}`);
+    console.log(`  Run: sudo certbot certonly --standalone -d ${CERT_DOMAIN}\n`);
+  });
+}
