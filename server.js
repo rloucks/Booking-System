@@ -4,15 +4,13 @@ const express  = require('express');
 const session  = require('express-session');
 const path     = require('path');
 const fs       = require('fs');
-const bcrypt   = require('bcrypt');
+const bcrypt   = require('bcryptjs');
 const { google } = require('googleapis');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
 // ── Demo mode ──────────────────────────────────────────────────────────────
-// Set DEMO_MODE=true in .env (or leave GOOGLE_CLIENT_ID blank) to bypass OAuth
-// Demo users: any email works. Prefix with "admin" for admin access.
 const DEMO_MODE = process.env.DEMO_MODE === 'true' || !process.env.GOOGLE_CLIENT_ID;
 
 // ── File paths ─────────────────────────────────────────────────────────────
@@ -28,20 +26,41 @@ function writeJson(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
+// ── Logging ────────────────────────────────────────────────────────────────
+function log(level, msg, data) {
+  const ts = new Date().toISOString().slice(11, 19);
+  const out = data ? `[${ts}] ${level}: ${msg} ${JSON.stringify(data)}` : `[${ts}] ${level}: ${msg}`;
+  console.log(out);
+}
+
 // ── Middleware ─────────────────────────────────────────────────────────────
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Request logger — visible in Chrome via /api/log endpoint
+const requestLog = [];
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api/log')) {
+    const entry = { ts: new Date().toISOString().slice(11,19), method: req.method, path: req.path, status: null };
+    res.on('finish', () => { entry.status = res.statusCode; });
+    requestLog.unshift(entry);
+    if (requestLog.length > 50) requestLog.pop();
+  }
+  next();
+});
+
 app.use(session({
   secret: process.env.SESSION_SECRET || 'dev-secret-change-in-production',
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: process.env.NODE_ENV === 'production' && !DEMO_MODE,
+    secure: false,   // ← must be false until HTTPS is set up
+    httpOnly: true,
     maxAge: 7 * 24 * 60 * 60 * 1000,
   },
 }));
 
-// ── Google OAuth setup (skipped in demo mode) ──────────────────────────────
+// ── Google OAuth ───────────────────────────────────────────────────────────
 const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
   .split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
 
@@ -61,49 +80,66 @@ const SCOPES = [
 
 // ── Auth middleware ────────────────────────────────────────────────────────
 function requireAuth(req, res, next) {
-  if (DEMO_MODE && req.session.user) return next();
   if (!req.session.user) return res.status(401).json({ error: 'Not authenticated' });
   next();
 }
 function requireAdmin(req, res, next) {
-  if (!req.session.user) return res.status(401).json({ error: 'Not authenticated' });
+  if (!req.session.user)         return res.status(401).json({ error: 'Not authenticated' });
   if (!req.session.user.isAdmin) return res.status(403).json({ error: 'Admin required' });
   next();
 }
 
+// ── Debug log endpoint (readable from browser console) ────────────────────
+app.get('/api/log', (req, res) => {
+  res.json({
+    demoMode: DEMO_MODE,
+    sessionUser: req.session.user || null,
+    recentRequests: requestLog.slice(0, 20),
+  });
+});
+
 // ── Auth routes ────────────────────────────────────────────────────────────
-// Demo login — POST with { email }
 app.post('/auth/demo', (req, res) => {
-  if (!DEMO_MODE) return res.status(404).json({ error: 'Not available' });
+  if (!DEMO_MODE) return res.status(404).json({ error: 'Not in demo mode' });
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
   const name = email.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
   req.session.user = {
-    email: email.toLowerCase(),
-    name,
-    avatar: '',
+    email: email.toLowerCase(), name, avatar: '',
     isAdmin: email.toLowerCase().startsWith('admin') || ADMIN_EMAILS.includes(email.toLowerCase()),
   };
+  log('AUTH', 'Demo login', { email });
   res.json({ user: req.session.user });
 });
 
-// Google OAuth
 app.get('/auth/google', (req, res) => {
   if (DEMO_MODE) return res.redirect('/?error=demo_mode');
   const url = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: 'consent' });
+  log('AUTH', 'Redirecting to Google OAuth', { redirect_uri: process.env.GOOGLE_REDIRECT_URI });
   res.redirect(url);
 });
 
 app.get('/auth/google/callback', async (req, res) => {
   if (DEMO_MODE) return res.redirect('/');
+  if (req.query.error) {
+    log('AUTH', 'Google OAuth error', { error: req.query.error });
+    return res.redirect('/?error=' + req.query.error);
+  }
   try {
+    log('AUTH', 'Google callback received, exchanging code...');
     const { tokens } = await oauth2Client.getToken(req.query.code);
     oauth2Client.setCredentials(tokens);
-    const oauth2    = google.oauth2({ version: 'v2', auth: oauth2Client });
-    const { data }  = await oauth2.userinfo.get();
-    const allowed   = process.env.ALLOWED_DOMAIN;
-    if (allowed && !data.email.endsWith('@' + allowed))
+
+    const oauth2api = google.oauth2({ version: 'v2', auth: oauth2Client });
+    const { data }  = await oauth2api.userinfo.get();
+    log('AUTH', 'Google profile retrieved', { email: data.email, name: data.name });
+
+    const allowed = process.env.ALLOWED_DOMAIN;
+    if (allowed && !data.email.endsWith('@' + allowed)) {
+      log('AUTH', 'Domain not allowed', { email: data.email, allowed });
       return res.redirect('/?error=unauthorized_domain');
+    }
+
     req.session.user = {
       email:   data.email,
       name:    data.name,
@@ -111,19 +147,31 @@ app.get('/auth/google/callback', async (req, res) => {
       isAdmin: ADMIN_EMAILS.includes(data.email.toLowerCase()),
       tokens,
     };
-    res.redirect('/');
+
+    // Force session save before redirect
+    req.session.save(err => {
+      if (err) {
+        log('AUTH', 'Session save error', { err: err.message });
+        return res.redirect('/?error=session_failed');
+      }
+      log('AUTH', 'Session saved, redirecting home', { email: data.email, isAdmin: req.session.user.isAdmin });
+      res.redirect('/');
+    });
+
   } catch (err) {
-    console.error('OAuth error:', err.message);
+    log('AUTH', 'OAuth callback error', { error: err.message });
     res.redirect('/?error=auth_failed');
   }
 });
 
 app.get('/auth/logout', (req, res) => {
+  log('AUTH', 'Logout', { email: req.session.user?.email });
   req.session.destroy();
   res.redirect('/');
 });
 
 app.get('/api/me', (req, res) => {
+  log('API', '/api/me', { user: req.session.user?.email || null });
   if (!req.session.user) return res.json({ user: null, demoMode: DEMO_MODE });
   const { email, name, avatar, isAdmin } = req.session.user;
   res.json({ user: { email, name, avatar, isAdmin }, demoMode: DEMO_MODE });
@@ -131,31 +179,29 @@ app.get('/api/me', (req, res) => {
 
 // ── PIN helpers ────────────────────────────────────────────────────────────
 const SALT_ROUNDS = 10;
-async function hashPin(pin)           { return bcrypt.hash(String(pin), SALT_ROUNDS); }
-async function verifyPin(pin, hash)   { return bcrypt.compare(String(pin), hash); }
+async function hashPin(pin)         { return bcrypt.hash(String(pin), SALT_ROUNDS); }
+async function verifyPin(pin, hash) { return bcrypt.compare(String(pin), hash); }
 
-// ── Bookings — GET (public, no auth needed for floor plan) ─────────────────
+// ── Bookings — GET ─────────────────────────────────────────────────────────
 app.get('/api/bookings', (req, res) => {
   const bookings = readJson(DATA_FILE, []);
   const { date, deskId } = req.query;
   let result = bookings.filter(b => b.status === 'active');
   if (date)   result = result.filter(b => b.date === date);
   if (deskId) result = result.filter(b => b.deskId == deskId);
-  // Strip pinHash before sending to clients — never expose it
   res.json(result.map(({ pinHash, ...b }) => b));
 });
 
 // ── Bookings — POST ────────────────────────────────────────────────────────
 app.post('/api/bookings', requireAuth, async (req, res) => {
   const { deskId, date, timeSlot, timeStart, timeEnd, note, pin, userEmail, userName } = req.body;
-  if (!deskId || !date)  return res.status(400).json({ error: 'deskId and date required' });
+  if (!deskId || !date) return res.status(400).json({ error: 'deskId and date required' });
   if (!pin || String(pin).length !== 4 || isNaN(pin))
     return res.status(400).json({ error: 'A 4-digit PIN is required' });
 
   const bookings = readJson(DATA_FILE, []);
-
-  // Conflict check — same desk, same date, overlapping time slot
-  const conflict = bookings.filter(b => b.deskId == deskId && b.date === date && b.status === 'active')
+  const conflict = bookings
+    .filter(b => b.deskId == deskId && b.date === date && b.status === 'active')
     .find(b => {
       if (b.timeSlot === 'allday' || !timeSlot || timeSlot === 'allday') return true;
       return b.timeSlot === timeSlot;
@@ -168,7 +214,7 @@ app.post('/api/bookings', requireAuth, async (req, res) => {
   const isStanding  = String(deskId).startsWith('S');
 
   const booking = {
-    id:          'bk_' + Date.now(),
+    id: 'bk_' + Date.now(),
     deskId, isStanding, date,
     timeSlot:    timeSlot  || 'allday',
     timeStart:   timeStart || '',
@@ -185,7 +231,7 @@ app.post('/api/bookings', requireAuth, async (req, res) => {
     calendarEventId: null,
   };
 
-  // Google Calendar (skipped in demo mode or if no tokens)
+  // Google Calendar
   if (!DEMO_MODE && req.session.user.tokens) {
     try {
       const auth = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET);
@@ -201,20 +247,20 @@ app.post('/api/bookings', requireAuth, async (req, res) => {
         },
       });
       booking.calendarEventId = event.data.id;
+      log('CAL', 'Calendar event created', { eventId: event.data.id });
     } catch (err) {
-      console.warn('Calendar event failed (continuing):', err.message);
+      log('CAL', 'Calendar event failed (continuing)', { error: err.message });
     }
   }
 
-  // n8n webhook — booking created
   triggerN8n('booking_created', { booking: { ...booking, pinHash: undefined } });
-
   bookings.push(booking);
   writeJson(DATA_FILE, bookings);
+  log('BOOK', 'Booking created', { deskId, date, user: targetEmail });
   res.status(201).json({ ...booking, pinHash: undefined });
 });
 
-// ── Bookings — DELETE (requires PIN or admin session) ─────────────────────
+// ── Bookings — DELETE ──────────────────────────────────────────────────────
 app.delete('/api/bookings/:id', async (req, res) => {
   const { pin } = req.body;
   const bookings = readJson(DATA_FILE, []);
@@ -222,9 +268,7 @@ app.delete('/api/bookings/:id', async (req, res) => {
   if (!b) return res.status(404).json({ error: 'Not found' });
 
   const isAdminSession = req.session.user?.isAdmin;
-
   if (!isAdminSession) {
-    // Require PIN for non-admin cancellation
     if (!pin) return res.status(401).json({ error: 'PIN required' });
     const valid = await verifyPin(pin, b.pinHash);
     if (!valid) return res.status(403).json({ error: 'Incorrect PIN' });
@@ -234,7 +278,6 @@ app.delete('/api/bookings/:id', async (req, res) => {
   b.cancelledAt = new Date().toISOString();
   b.cancelledBy = req.session.user?.email || 'device';
 
-  // Remove Google Calendar event
   if (!DEMO_MODE && b.calendarEventId && req.session.user?.tokens) {
     try {
       const auth = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET);
@@ -244,19 +287,19 @@ app.delete('/api/bookings/:id', async (req, res) => {
         calendarId: process.env.GOOGLE_CALENDAR_ID || 'primary',
         eventId: b.calendarEventId,
       });
+      log('CAL', 'Calendar event deleted', { eventId: b.calendarEventId });
     } catch (err) {
-      console.warn('Calendar delete failed (continuing):', err.message);
+      log('CAL', 'Calendar delete failed (continuing)', { error: err.message });
     }
   }
 
-  // n8n webhook — booking cancelled
   triggerN8n('booking_cancelled', { booking: { ...b, pinHash: undefined } });
-
   writeJson(DATA_FILE, bookings);
+  log('BOOK', 'Booking cancelled', { id: req.params.id, by: b.cancelledBy });
   res.json({ success: true });
 });
 
-// ── Bookings — PATCH (admin reassign/edit, no PIN needed) ─────────────────
+// ── Bookings — PATCH (admin) ───────────────────────────────────────────────
 app.patch('/api/bookings/:id', requireAdmin, (req, res) => {
   const bookings = readJson(DATA_FILE, []);
   const b = bookings.find(b => b.id === req.params.id);
@@ -272,64 +315,47 @@ app.patch('/api/bookings/:id', requireAdmin, (req, res) => {
   res.json({ ...b, pinHash: undefined });
 });
 
-// ── Check-in (requires PIN) ────────────────────────────────────────────────
+// ── Check-in ───────────────────────────────────────────────────────────────
 app.post('/api/bookings/:id/checkin', async (req, res) => {
   const { pin } = req.body;
   if (!pin) return res.status(400).json({ error: 'PIN required' });
-
   const bookings = readJson(DATA_FILE, []);
   const b = bookings.find(b => b.id === req.params.id);
-  if (!b)              return res.status(404).json({ error: 'Not found' });
-  if (b.status !== 'active') return res.status(400).json({ error: 'Booking is not active' });
-  if (b.checkedIn)     return res.status(400).json({ error: 'Already checked in' });
-
+  if (!b)                    return res.status(404).json({ error: 'Not found' });
+  if (b.status !== 'active') return res.status(400).json({ error: 'Booking not active' });
+  if (b.checkedIn)           return res.status(400).json({ error: 'Already checked in' });
   const valid = await verifyPin(pin, b.pinHash);
   if (!valid) return res.status(403).json({ error: 'Incorrect PIN' });
-
   b.checkedIn   = true;
   b.checkedInAt = new Date().toISOString();
-
-  // n8n webhook — checked in
   triggerN8n('checked_in', { booking: { ...b, pinHash: undefined } });
-
   writeJson(DATA_FILE, bookings);
+  log('BOOK', 'Checked in', { id: b.id, desk: b.deskId, user: b.userEmail });
   res.json({ success: true, checkedInAt: b.checkedInAt });
 });
 
-// ── Device status endpoint (ESP32 polls this) ─────────────────────────────
-// GET /api/desk-status/:deskId?date=YYYY-MM-DD
-// Returns clean status object — no auth needed, internal network only
+// ── Device status endpoint ─────────────────────────────────────────────────
 app.get('/api/desk-status/:deskId', (req, res) => {
   const { deskId } = req.params;
   const date = req.query.date || new Date().toISOString().split('T')[0];
   const bookings = readJson(DATA_FILE, []);
-  const cfg = readJson(CONFIG_FILE, {});
-
-  const active = bookings.filter(b =>
-    b.deskId == deskId && b.date === date && b.status === 'active'
-  );
-
-  const deskCfg = cfg[deskId] || {};
-
+  const cfg      = readJson(CONFIG_FILE, {});
+  const active   = bookings.filter(b => b.deskId == deskId && b.date === date && b.status === 'active');
+  const deskCfg  = cfg[deskId] || {};
   res.json({
-    deskId,
-    date,
-    disabled:  deskCfg.disabled || false,
-    note:      deskCfg.note || '',
-    bookings:  active.map(b => ({
-      id:          b.id,
-      userName:    b.userName,
-      timeSlot:    b.timeSlot || 'allday',
-      timeStart:   b.timeStart || '',
-      timeEnd:     b.timeEnd   || '',
-      checkedIn:   b.checkedIn || false,
-      checkedInAt: b.checkedInAt || null,
-      note:        b.note || '',
-      // Never send pinHash to device
-    })),
-    available: active.length === 0 && !deskCfg.disabled,
+    deskId, date,
+    disabled:    deskCfg.disabled || false,
+    note:        deskCfg.note || '',
+    available:   active.length === 0 && !deskCfg.disabled,
     fullyBooked: active.some(b => b.timeSlot === 'allday') ||
       (active.some(b => b.timeSlot === 'morning') && active.some(b => b.timeSlot === 'afternoon')),
+    bookings: active.map(b => ({
+      id: b.id, userName: b.userName,
+      timeSlot: b.timeSlot || 'allday',
+      timeStart: b.timeStart || '', timeEnd: b.timeEnd || '',
+      checkedIn: b.checkedIn || false, checkedInAt: b.checkedInAt || null,
+      note: b.note || '',
+    })),
   });
 });
 
@@ -345,7 +371,7 @@ app.patch('/api/desks/:deskId/config', requireAdmin, (req, res) => {
   res.json(cfg[req.params.deskId]);
 });
 
-// ── Users (admin) ──────────────────────────────────────────────────────────
+// ── Users ──────────────────────────────────────────────────────────────────
 app.get('/api/users', requireAdmin, async (req, res) => {
   if (!DEMO_MODE && process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
     try {
@@ -358,16 +384,15 @@ app.get('/api/users', requireAdmin, async (req, res) => {
       const { data } = await directory.users.list({ domain: process.env.ALLOWED_DOMAIN, maxResults: 200 });
       return res.json(data.users.map(u => ({ email: u.primaryEmail, name: u.name.fullName })));
     } catch (err) {
-      console.warn('Directory API failed, falling back:', err.message);
+      log('DIR', 'Directory API failed, using fallback', { error: err.message });
     }
   }
-  // Fallback: unique users from booking history
   const bookings = readJson(DATA_FILE, []);
   const users = [...new Map(bookings.map(b => [b.userEmail, { email: b.userEmail, name: b.userName }])).values()];
   res.json(users);
 });
 
-// ── n8n webhook helper ─────────────────────────────────────────────────────
+// ── n8n webhook ────────────────────────────────────────────────────────────
 async function triggerN8n(event, data) {
   const url = process.env.N8N_WEBHOOK_URL;
   if (!url) return;
@@ -379,16 +404,19 @@ async function triggerN8n(event, data) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ event, timestamp: new Date().toISOString(), ...data }),
     });
+    log('N8N', 'Webhook fired', { event });
   } catch (err) {
-    console.warn(`n8n webhook failed for ${event}:`, err.message);
+    log('N8N', 'Webhook failed', { event, error: err.message });
   }
 }
 
 // ── Start ──────────────────────────────────────────────────────────────────
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`\nDeskBook running at http://localhost:${PORT}`);
-  console.log(`Mode:         ${DEMO_MODE ? '⚠️  DEMO (no Google Auth)' : '✅ Production (Google OAuth)'}`);
-  console.log(`Google OAuth: ${process.env.GOOGLE_CLIENT_ID ? 'configured' : 'not configured'}`);
-  console.log(`n8n webhook:  ${process.env.N8N_WEBHOOK_URL ? 'configured' : 'not configured'}`);
-  console.log(`Admin emails: ${ADMIN_EMAILS.length ? ADMIN_EMAILS.join(', ') : 'none set'}\n`);
+  console.log(`\n┌─────────────────────────────────────────┐`);
+  console.log(`│  DeskBook running on port ${PORT}           │`);
+  console.log(`│  Mode:    ${DEMO_MODE ? '⚠️  DEMO (no Google Auth)  ' : '✅ Production (Google OAuth)'}  │`);
+  console.log(`│  OAuth:   ${process.env.GOOGLE_CLIENT_ID ? '✅ configured               ' : '❌ not configured           '}  │`);
+  console.log(`│  n8n:     ${process.env.N8N_WEBHOOK_URL  ? '✅ configured               ' : '— not configured           '}  │`);
+  console.log(`│  Admins:  ${ADMIN_EMAILS.length ? ADMIN_EMAILS.join(', ').padEnd(28) : 'none set                    '} │`);
+  console.log(`└─────────────────────────────────────────┘\n`);
 });

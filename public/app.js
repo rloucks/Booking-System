@@ -52,19 +52,25 @@ const state = {
 
 // ===== API =====
 async function apiFetch(path, opts = {}) {
+  console.debug('[DeskBook]', opts.method || 'GET', path);
   const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
+    console.error('[DeskBook] API error', path, res.status, err.error);
     throw new Error(err.error || res.statusText);
   }
-  return res.json();
+  const data = await res.json();
+  console.debug('[DeskBook] ✓', path, data);
+  return data;
 }
 
 async function loadData() {
+  console.log('[DeskBook] Loading data...');
   try {
     const me = await apiFetch('/api/me');
     state.apiAvailable = true;
     state.demoMode = me.demoMode || false;
+    console.log('[DeskBook] Server mode:', state.demoMode ? 'DEMO' : 'Production', '| User:', me.user?.email || 'not logged in');
     const [config, bookings] = await Promise.all([
       apiFetch('/api/desks/config'),
       Promise.resolve([]),
@@ -757,3 +763,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     setZoom(Math.min(1,Math.min(+c.clientWidth/+s.getAttribute('width'),+c.clientHeight/+s.getAttribute('height'))*0.90));
   },100);
 });
+
+// ===== DEBUG HELPERS (visible in Chrome console) =====
+// Usage: dbg()  →  prints current state
+// Usage: fetch('/api/log').then(r=>r.json()).then(console.log)  →  server log
+window.dbg = async () => {
+  console.group('DeskBook Debug');
+  console.log('apiAvailable:', state.apiAvailable);
+  console.log('demoMode:', state.demoMode);
+  console.log('currentUser:', state.currentUser);
+  console.log('isAdmin:', state.isAdmin);
+  console.log('bookings:', state.bookings.length);
+  const serverLog = await fetch('/api/log').then(r=>r.json()).catch(e=>({error:e.message}));
+  console.log('server:', serverLog);
+  console.groupEnd();
+};
+// Expose state for console inspection
+window._state = state;
