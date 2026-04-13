@@ -64,14 +64,6 @@ app.use(session({
 const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
   .split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
 
-app.get('/auth/google', (req, res) => {
-  console.log('Client ID:', process.env.GOOGLE_CLIENT_ID);
-  console.log('Redirect URI:', process.env.GOOGLE_REDIRECT_URI);
-  const url = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: 'consent' });
-  console.log('Auth URL:', url);
-  res.redirect(url);
-});
-
 let oauth2Client;
 if (!DEMO_MODE) {
   oauth2Client = new google.auth.OAuth2(
